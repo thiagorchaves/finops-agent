@@ -1,0 +1,12 @@
+[Unit]
+Description=Roda o FinOps Agent diariamente
+
+[Timer]
+# Ajuste o horário como quiser. 08:00 costuma ser um bom horário: os dados de
+# "ontem" no Cost Explorer já estão praticamente consolidados.
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+# Se o notebook estava desligado/suspenso no horário, roda assim que ligar de novo.
+
+[Install]
+WantedBy=timers.target

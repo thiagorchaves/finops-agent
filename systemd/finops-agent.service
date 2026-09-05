@@ -1,0 +1,11 @@
+[Unit]
+Description=FinOps Agent - verifica custo das contas AWS
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/finops-agent
+# "-" no início: se o .env não existir ainda, não falha (só o email não vai sair)
+EnvironmentFile=-%h/finops-agent/.env
+ExecStart=%h/finops-agent/venv/bin/python3 %h/finops-agent/finops_agent.py --config %h/finops-agent/config.yaml

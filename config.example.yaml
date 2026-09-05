@@ -1,0 +1,49 @@
+# Configuração do FinOps Agent.
+# Copie este arquivo para config.yaml (mesma pasta) e ajuste os valores:
+#   cp config.example.yaml config.yaml
+
+# Contas AWS a monitorar. Cada uma usa um profile do seu ~/.aws/credentials
+# (ou ~/.aws/config) — já que você não tem acesso à conta "main"/management,
+# um profile por conta filha que você acessa.
+accounts:
+  - profile: conta-cliente-a
+    name: "Cliente A"        # nome amigável usado nos alertas (opcional)
+    # threshold_pct: 50      # opcional: sobrescreve o threshold_pct global só para esta conta
+  - profile: conta-cliente-b
+    name: "Cliente B"
+
+# Região usada para chamar a API do Cost Explorer (a API é global, mas o boto3
+# exige uma região válida para criar o client). Não precisa mudar isso.
+ce_region: us-east-1
+
+# Regra de alerta: dispara quando o custo do "dia de referência" fica X% acima
+# da média móvel dos `lookback_days` dias anteriores.
+# O dia de referência é sempre ONTEM (não hoje), porque o Cost Explorer tem um
+# atraso natural de ~24-48h para consolidar os dados do dia corrente.
+threshold_pct: 30
+
+# Quantos dias usar para calcular a média móvel de comparação.
+lookback_days: 7
+
+# Custo mínimo (em USD) do dia de referência abaixo do qual o alerta é
+# ignorado. Evita ruído tipo "conta de US$0,50/dia dobrou = alerta de 100%".
+min_daily_cost_usd: 5.0
+
+# Onde guardar o estado local (usado só para não alertar 2x no mesmo dia pela
+# mesma conta, caso o agente rode mais de uma vez por dia).
+state_file: "~/.finops-agent/state.json"
+
+notifications:
+  desktop:
+    enabled: true
+
+  email:
+    enabled: true
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    smtp_user: "seu-email@gmail.com"
+    from: "seu-email@gmail.com"
+    to: "seu-email@gmail.com"
+    # A senha do SMTP NÃO fica neste arquivo. Defina a variável de ambiente
+    # FINOPS_SMTP_PASSWORD antes de rodar o script (veja o README) — no Gmail,
+    # use uma "senha de app", nunca a senha da conta.
