@@ -36,12 +36,13 @@ class FakeCEClient:
         return self._response
 
 
-def run_case(name, daily_amounts, threshold_pct, min_daily_cost, expect_alert):
+def run_case(name, daily_amounts, threshold_pct, min_daily_cost, expect_alert, min_absolute_increase_usd=0):
     cfg = {
         "ce_region": "us-east-1",
         "lookback_days": 7,
         "threshold_pct": threshold_pct,
         "min_daily_cost_usd": min_daily_cost,
+        "min_absolute_increase_usd": min_absolute_increase_usd,
     }
     account_cfg = {"profile": "fake-profile", "name": name}
 
@@ -72,6 +73,14 @@ def main():
 
     # Caso 4: conta que começa do zero (média 0) e passa a custar -> alerta
     run_case("do-zero", [0, 0, 0, 0, 0, 0, 0, 20], threshold_pct=30, min_daily_cost=5.0, expect_alert=True)
+
+    # Caso 5: conta grande, +15% mas +$450 em valor absoluto -> alerta (mesmo com % baixo)
+    run_case("grande-delta-alto", [3000] * 7 + [3450], threshold_pct=10, min_daily_cost=5.0,
+             expect_alert=True, min_absolute_increase_usd=300)
+
+    # Caso 6: conta pequena, +80% mas só +$40 em valor absoluto -> sem alerta (delta mínimo não bate)
+    run_case("pequena-delta-baixo", [50] * 7 + [90], threshold_pct=30, min_daily_cost=5.0,
+             expect_alert=False, min_absolute_increase_usd=300)
 
     print("\nTodos os casos passaram.")
 

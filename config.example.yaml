@@ -29,6 +29,12 @@ lookback_days: 7
 # ignorado. Evita ruído tipo "conta de US$0,50/dia dobrou = alerta de 100%".
 min_daily_cost_usd: 5.0
 
+# Aumento mínimo em valor absoluto (USD) para o alerta valer a pena, além do
+# threshold_pct. Ex: numa conta que varia entre US$2.000 e US$3.000/dia, um
+# +15% (US$300) importa mais que um +80% numa conta de US$50/dia (US$40).
+# 0 desativa esse filtro (só o threshold_pct/min_daily_cost_usd valem).
+min_absolute_increase_usd: 0
+
 # Onde guardar o estado local (usado só para não alertar 2x no mesmo dia pela
 # mesma conta, caso o agente rode mais de uma vez por dia).
 state_file: "~/.finops-agent/state.json"

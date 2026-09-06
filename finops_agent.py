@@ -81,25 +81,30 @@ def get_daily_costs(profile: str, region: str, lookback_days: int) -> list[tuple
     return daily
 
 
-def get_service_breakdown(profile: str, region: str, day: str, top_n: int = 3) -> list[tuple[str, float]]:
-    """Top N serviços por custo no dia informado (para dar contexto no alerta)."""
+def get_cost_breakdown(profile: str, region: str, day: str, group_by_key: str, top_n: int = 3,
+                        filter_service: str | None = None) -> list[tuple[str, float]]:
+    """Top N valores agrupados por SERVICE ou USAGE_TYPE no dia informado (contexto do alerta)."""
     session = boto3.Session(profile_name=profile)
     ce = session.client("ce", region_name=region)
 
     next_day = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
-    resp = ce.get_cost_and_usage(
+    kwargs = dict(
         TimePeriod={"Start": day, "End": next_day},
         Granularity="DAILY",
         Metrics=["UnblendedCost"],
-        GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+        GroupBy=[{"Type": "DIMENSION", "Key": group_by_key}],
     )
-    services = []
+    if filter_service:
+        kwargs["Filter"] = {"Dimensions": {"Key": "SERVICE", "Values": [filter_service]}}
+
+    resp = ce.get_cost_and_usage(**kwargs)
+    items = []
     for group in resp["ResultsByTime"][0].get("Groups", []):
         name = group["Keys"][0]
         amount = float(group["Metrics"]["UnblendedCost"]["Amount"])
-        services.append((name, amount))
-    services.sort(key=lambda x: -x[1])
-    return services[:top_n]
+        items.append((name, amount))
+    items.sort(key=lambda x: -x[1])
+    return items[:top_n]
 
 
 # --------------------------------------------------------------------------- #
@@ -182,6 +187,9 @@ def evaluate_account(cfg: dict, account_cfg: dict) -> dict:
     lookback_days = cfg.get("lookback_days", 7)
     threshold_pct = account_cfg.get("threshold_pct", cfg.get("threshold_pct", 30))
     min_daily_cost = cfg.get("min_daily_cost_usd", 5.0)
+    min_absolute_increase = account_cfg.get(
+        "min_absolute_increase_usd", cfg.get("min_absolute_increase_usd", 0)
+    )
 
     result = {
         "profile": profile,
@@ -192,6 +200,7 @@ def evaluate_account(cfg: dict, account_cfg: dict) -> dict:
         "reference_cost": None,
         "avg_cost": None,
         "pct_diff": None,
+        "absolute_increase": None,
         "message": None,
     }
 
@@ -229,13 +238,16 @@ def evaluate_account(cfg: dict, account_cfg: dict) -> dict:
         name, reference_day, reference_cost, lookback_days, avg_cost, pct_diff,
     )
 
+    absolute_increase = reference_cost - avg_cost
+    result["absolute_increase"] = absolute_increase
+
     if reference_cost < min_daily_cost:
         return result  # custo pequeno demais para valer alerta, mesmo com %alta
 
-    if pct_diff > threshold_pct:
+    if pct_diff > threshold_pct and absolute_increase >= min_absolute_increase:
         result["alert"] = True
         try:
-            top_services = get_service_breakdown(profile, region, reference_day)
+            top_services = get_cost_breakdown(profile, region, reference_day, "SERVICE")
         except (BotoCoreError, ClientError, Exception):  # noqa: BLE001
             top_services = []
 
@@ -243,12 +255,26 @@ def evaluate_account(cfg: dict, account_cfg: dict) -> dict:
             f"Conta: {name} (profile: {profile})",
             f"Dia: {reference_day}",
             f"Custo: US$ {reference_cost:.2f}  (média dos últimos {lookback_days} dias: US$ {avg_cost:.2f})",
-            f"Variação: +{pct_diff:.1f}% (limite configurado: {threshold_pct}%)",
+            f"Variação: +{pct_diff:.1f}% / +US$ {absolute_increase:.2f} (limite: {threshold_pct}% / US$ {min_absolute_increase:.2f})",
         ]
         if top_services:
             lines.append("Maiores serviços do dia:")
             for svc, amount in top_services:
                 lines.append(f"  - {svc}: US$ {amount:.2f}")
+
+            # drill-down: usage types do serviço que mais custou, pra apontar a causa direto
+            top_service_name = top_services[0][0]
+            try:
+                top_usage_types = get_cost_breakdown(
+                    profile, region, reference_day, "USAGE_TYPE", filter_service=top_service_name
+                )
+            except (BotoCoreError, ClientError, Exception):  # noqa: BLE001
+                top_usage_types = []
+            if top_usage_types:
+                lines.append(f"Detalhe de '{top_service_name}' por usage type:")
+                for usage_type, amount in top_usage_types:
+                    lines.append(f"  - {usage_type}: US$ {amount:.2f}")
+
         result["message"] = "\n".join(lines)
 
     return result
@@ -281,8 +307,11 @@ def main() -> int:
         return 1
 
     any_alert = False
+    results = []
     for account_cfg in accounts:
         result = evaluate_account(cfg, account_cfg)
+        results.append(result)
+
         if not result["alert"]:
             continue
 
@@ -301,11 +330,34 @@ def main() -> int:
     if not args.dry_run:
         save_state(cfg["state_file"], state)
 
+    print_summary_table(results)
+
     if any_alert:
         log.info("Execução concluída com alertas disparados.")
     else:
         log.info("Execução concluída, nenhuma conta acima do limite.")
     return 0
+
+
+def print_summary_table(results: list[dict]) -> None:
+    """Resumo tipo 'top increases': todas as contas avaliadas, ordenadas pela maior variação."""
+    ok_results = [r for r in results if r["ok"]]
+    if not ok_results:
+        return
+    ok_results.sort(key=lambda r: r["pct_diff"], reverse=True)
+
+    print(f"\n{'CONTA':<20} {'ONTEM':>12} {'MÉDIA 7D':>12} {'VARIAÇÃO':>12}")
+    print("-" * 60)
+    for r in ok_results:
+        flag = " !" if r["alert"] else ""
+        print(
+            f"{r['name']:<20} {r['reference_cost']:>10.2f}$ {r['avg_cost']:>10.2f}$ "
+            f"{r['pct_diff']:>+10.1f}%{flag}"
+        )
+
+    failed = [r for r in results if not r["ok"]]
+    for r in failed:
+        print(f"{r['name']:<20} {r['message']}")
 
 
 if __name__ == "__main__":
