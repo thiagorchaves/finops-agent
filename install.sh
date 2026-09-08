@@ -17,9 +17,10 @@ if [ ! -f config.yaml ]; then
 fi
 
 if [ ! -f .env ]; then
-    echo "==> Criando .env (coloque a senha do SMTP aqui, se for usar email)"
+    echo "==> Criando .env (coloque a senha do SMTP e/ou o webhook do Slack aqui)"
     cat > .env <<'EOF'
 # FINOPS_SMTP_PASSWORD=sua-senha-de-app-aqui
+# FINOPS_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
 EOF
     chmod 600 .env
 fi
@@ -34,7 +35,7 @@ systemctl --user enable --now finops-agent.timer
 echo ""
 echo "==> Pronto. Timer instalado e habilitado."
 echo "    Edite $HERE/config.yaml com seus profiles AWS antes do primeiro alerta real."
-echo "    Se for usar email, edite $HERE/.env com FINOPS_SMTP_PASSWORD."
+echo "    Se for usar email/Slack, edite $HERE/.env com FINOPS_SMTP_PASSWORD / FINOPS_SLACK_WEBHOOK_URL."
 echo ""
 echo "Comandos úteis:"
 echo "  systemctl --user status finops-agent.timer     # ver próxima execução"
