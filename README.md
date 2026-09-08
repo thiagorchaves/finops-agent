@@ -92,6 +92,22 @@ journalctl --user -u finops-agent.service -f  # acompanha os logs
 systemctl --user status finops-agent.timer    # vê quando roda de novo
 ```
 
+## Notificação Slack
+
+Crie um [Incoming Webhook](https://api.slack.com/messaging/webhooks) no
+workspace/canal desejado e defina a URL na variável de ambiente
+`FINOPS_SLACK_WEBHOOK_URL` (mesmo esquema do `FINOPS_SMTP_PASSWORD`, nunca no
+`config.yaml`). Depois é só habilitar `notifications.slack.enabled: true`.
+
+## Painel gerencial
+
+A cada execução (real ou `--dry-run`), o agente gera um arquivo HTML
+(`dashboard_file`, padrão `~/.finops-agent/dashboard.html`) com uma tabela
+resumo de todas as contas, o gráfico de custo diário de cada uma (usando os
+dados já buscados no Cost Explorer nesta execução, cobrindo `lookback_days`
+dias) e os maiores serviços do dia para contas em alerta. Basta abrir o
+arquivo no navegador — não precisa de servidor.
+
 ## Notificação desktop
 
 Usa `notify-send` (pacote `libnotify-bin` na maioria das distros Debian/Ubuntu

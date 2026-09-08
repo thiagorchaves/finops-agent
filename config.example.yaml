@@ -39,6 +39,10 @@ min_absolute_increase_usd: 0
 # mesma conta, caso o agente rode mais de uma vez por dia).
 state_file: "~/.finops-agent/state.json"
 
+# Painel HTML gerado a cada execução, com o resumo de todas as contas e o
+# gráfico de custo diário de cada uma. Abra o arquivo direto no navegador.
+dashboard_file: "~/.finops-agent/dashboard.html"
+
 notifications:
   desktop:
     enabled: true
@@ -53,3 +57,8 @@ notifications:
     # A senha do SMTP NÃO fica neste arquivo. Defina a variável de ambiente
     # FINOPS_SMTP_PASSWORD antes de rodar o script (veja o README) — no Gmail,
     # use uma "senha de app", nunca a senha da conta.
+
+  slack:
+    enabled: true
+    # A URL do webhook NÃO fica neste arquivo. Defina a variável de ambiente
+    # FINOPS_SLACK_WEBHOOK_URL antes de rodar o script (veja o README).

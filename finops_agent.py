@@ -24,8 +24,11 @@ import os
 import smtplib
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import date, timedelta
 from email.mime.text import MIMEText
+from html import escape
 from pathlib import Path
 
 import boto3
@@ -47,6 +50,7 @@ def load_config(path: Path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     cfg["state_file"] = str(Path(cfg.get("state_file", "~/.finops-agent/state.json")).expanduser())
+    cfg["dashboard_file"] = str(Path(cfg.get("dashboard_file", "~/.finops-agent/dashboard.html")).expanduser())
     return cfg
 
 
@@ -162,6 +166,21 @@ def send_desktop(subject: str, body: str) -> None:
         log.warning("Falha ao enviar notificação desktop: %s", exc)
 
 
+def send_slack(cfg: dict, subject: str, body: str) -> None:
+    webhook_url = os.environ.get("FINOPS_SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        log.error("FINOPS_SLACK_WEBHOOK_URL não definida no ambiente — Slack não enviado.")
+        return
+
+    payload = json.dumps({"text": f"*{subject}*\n```{body}```"}).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url, data=payload, headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        resp.read()
+    log.info("Mensagem enviada ao Slack.")
+
+
 def notify(cfg: dict, subject: str, body: str, dry_run: bool) -> None:
     if dry_run:
         log.info("[DRY-RUN] Alerta que seria enviado:\n%s\n%s", subject, body)
@@ -175,6 +194,11 @@ def notify(cfg: dict, subject: str, body: str, dry_run: bool) -> None:
             log.error("Falha ao enviar email: %s", exc)
     if notif_cfg.get("desktop", {}).get("enabled"):
         send_desktop(subject, body)
+    if notif_cfg.get("slack", {}).get("enabled"):
+        try:
+            send_slack(cfg, subject, body)
+        except (urllib.error.URLError, OSError) as exc:
+            log.error("Falha ao enviar Slack: %s", exc)
 
 
 # --------------------------------------------------------------------------- #
@@ -202,6 +226,8 @@ def evaluate_account(cfg: dict, account_cfg: dict) -> dict:
         "pct_diff": None,
         "absolute_increase": None,
         "message": None,
+        "daily": [],
+        "top_services": [],
     }
 
     try:
@@ -231,6 +257,7 @@ def evaluate_account(cfg: dict, account_cfg: dict) -> dict:
         reference_cost=reference_cost,
         avg_cost=avg_cost,
         pct_diff=pct_diff,
+        daily=daily,
     )
 
     log.info(
@@ -250,6 +277,7 @@ def evaluate_account(cfg: dict, account_cfg: dict) -> dict:
             top_services = get_cost_breakdown(profile, region, reference_day, "SERVICE")
         except (BotoCoreError, ClientError, Exception):  # noqa: BLE001
             top_services = []
+        result["top_services"] = top_services
 
         lines = [
             f"Conta: {name} (profile: {profile})",
@@ -278,6 +306,91 @@ def evaluate_account(cfg: dict, account_cfg: dict) -> dict:
         result["message"] = "\n".join(lines)
 
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Painel gerencial (HTML estático, com os dados já buscados nesta execução)
+# --------------------------------------------------------------------------- #
+def generate_dashboard(dashboard_file: str, results: list[dict]) -> None:
+    ok_results = [r for r in results if r["ok"]]
+
+    rows = "\n".join(
+        f"<tr class=\"{'alert' if r['alert'] else ''}\">"
+        f"<td>{escape(r['name'])}</td>"
+        f"<td>US$ {r['reference_cost']:.2f}</td>"
+        f"<td>US$ {r['avg_cost']:.2f}</td>"
+        f"<td>{r['pct_diff']:+.1f}%</td>"
+        f"<td>{'⚠️ alerta' if r['alert'] else 'ok'}</td>"
+        "</tr>"
+        for r in sorted(ok_results, key=lambda r: r["pct_diff"], reverse=True)
+    )
+    rows += "".join(
+        f"<tr class=\"error\"><td>{escape(r['name'])}</td><td colspan=4>{escape(r['message'] or '')}</td></tr>"
+        for r in results if not r["ok"]
+    )
+
+    services_html = ""
+    for r in ok_results:
+        if not r["top_services"]:
+            continue
+        items = "".join(f"<li>{escape(svc)}: US$ {amount:.2f}</li>" for svc, amount in r["top_services"])
+        services_html += f"<h3>{escape(r['name'])} — maiores serviços em {r['reference_day']}</h3><ul>{items}</ul>"
+
+    charts_data = {r["name"]: {"labels": [d for d, _ in r["daily"]], "values": [c for _, c in r["daily"]]}
+                   for r in ok_results}
+
+    html = f"""<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title>FinOps Agent — painel</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"
+        integrity="sha512-WoViKhKD4qI2WruSZqv9+kvM4WfFhUMQCLN4QlDTt5aU56fLQy2gYoxWIqlEnXqJy/+Ac5q/hk1oWfqnMDhwMA=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 2rem; background: #0b1220; color: #e2e8f0; }}
+  h1 {{ font-size: 1.4rem; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 1rem 0 2rem; }}
+  th, td {{ padding: .5rem .75rem; text-align: left; border-bottom: 1px solid #334155; }}
+  tr.alert {{ color: #fca5a5; }}
+  tr.error {{ color: #94a3b8; font-style: italic; }}
+  canvas {{ max-width: 700px; margin-bottom: 2rem; }}
+</style>
+</head>
+<body>
+<h1>FinOps Agent — painel gerencial</h1>
+<p>Gerado em {date.today().isoformat()}.</p>
+<table>
+<tr><th>Conta</th><th>Ontem</th><th>Média</th><th>Variação</th><th>Status</th></tr>
+{rows}
+</table>
+{services_html}
+<div id="charts"></div>
+<script>
+const data = {json.dumps(charts_data)};
+const container = document.getElementById("charts");
+for (const [name, series] of Object.entries(data)) {{
+  const heading = document.createElement("h3");
+  heading.textContent = `${{name}} — custo diário`;
+  const canvas = document.createElement("canvas");
+  container.appendChild(heading);
+  container.appendChild(canvas);
+  new Chart(canvas, {{
+    type: "line",
+    data: {{
+      labels: series.labels,
+      datasets: [{{ label: "Custo diário (US$)", data: series.values, borderColor: "#38bdf8", tension: .2 }}],
+    }},
+  }});
+}}
+</script>
+</body>
+</html>
+"""
+    p = Path(dashboard_file)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(html, encoding="utf-8")
+    log.info("Painel gerado em %s", p)
 
 
 # --------------------------------------------------------------------------- #
@@ -331,6 +444,7 @@ def main() -> int:
         save_state(cfg["state_file"], state)
 
     print_summary_table(results)
+    generate_dashboard(cfg["dashboard_file"], results)
 
     if any_alert:
         log.info("Execução concluída com alertas disparados.")
